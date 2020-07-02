@@ -1,0 +1,139 @@
+from numpy import arange, array
+from matplotlib.pyplot import plot, show, grid, xlabel, ylabel, axvline,annotate
+from tmm_core import (coh_tmm, coh_tmm_reverse, position_resolved, find_in_structure_with_inf, find_in_structure, absorp_in_each_layer)
+
+#Valeurs des indices complexes de réfraction (pour lambda = 800 nm)
+n_Cu=0.10509+5.1413j #K. M. McPeak, S. V. Jayanti, S. J. P. Kress, S. Meyer, S. Iotti, A. Rossinelli, and D. J. Norris. Plasmonic films can easily be better: Rules and recipes, ACS Photonics 2, 326-333 (2015)
+n_Pt=2.9779+6.3669j #DFT in W. S. M. Werner, K. Glantschnig, C. Ambrosch-Draxl. Optical constants and inelastic electron-scattering data for 17 elemental metals, J. Phys Chem Ref. Data 38, 1013-1092 (2009)
+n_CoPt=2.6732+5.1883j#Atkinson 1996
+n_Ta=1.0057+4.2230j #DFT in W. S. M. Werner, K. Glantschnig, C. Ambrosch-Draxl. Optical constants and inelastic electron-scattering data for 17 elemental metals, J. Phys Chem Ref. Data 38, 1013-1092 (2009)
+n_glass=1.5136
+n_Co=4.1863+5.0730j#DFT in W. S. M. Werner, K. Glantschnig, C. Ambrosch-Draxl. Optical constants and inelastic electron-scattering data for 17 elemental metals, J. Phys Chem Ref. Data 38, 1013-1092 (2009)
+n_air=1
+n_GdFeCo=3.7+3.855j#W. R. Hendren, R. Atkinson, R. J. Pollard, I. W. Salter, C. D. Wright, W. W. Clegg, D. F. L. Jenkins, J. Phys. Condens. Matter 2003, 15, 1461.
+"""
+Quand ce sera des listes, trier tout le monde avec fusion et tri_fusion avant de lancer
+"""
+
+#Valeurs des épaisseurs des couhes (en nm) (coh_tmm demande que l'épaisseur des première et dernières couches valent 'inf') (dans les listes, rentrer les valeurs dans l'ordre des couches)
+d_air = ['inf']
+d_glass = ['inf']
+d_Ta = [5, 5]
+d_GdFeCo = [5]
+d_Cu = [5, 10]
+d_CoPt = [3.2]
+d_Pt = [4]
+
+#Dictionnaire associant chaque élément à son indice optique et sa liste d'épaisseur (éventuellement vide s'il n'est pas utilisé dans le matériau considéré)
+data_dico = {'air':[d_air, n_air], 'Ta':[d_Ta, n_Ta], 'Cu':[d_Cu, n_Cu], 'GdFeCo':[d_GdFeCo, n_GdFeCo], 'CoPt':[d_CoPt, n_CoPt], 'Pt':[d_Pt, n_Pt], 'glass':[d_glass, n_glass]}
+
+#Ordre des couches considérées
+couche = ['air', 'Ta', 'Cu', 'GdFeCo', 'Cu', 'CoPt', 'Pt', 'Ta', 'glass']
+
+pol = 's'           #on se place en incidence normale, donc la polarisation choisie n'a pas d'impact
+th_0 = 0            #incidence normale
+lam_vac = 800       #en nm
+step = 100          #nb de points par couche pour le tracé 
+eps = 1e-3          #décalage par rapport à l'interface
+reverse = False     #s'il vaut True l'ordre de la couche est renversé, donc c'est comme si l'onde plane était envoyé depuis l'autre côté 
+
+def plot_absorb_depth(couche, data_dico, pol, th_0, lam_vac, step, eps, reverse):
+
+    """
+    Cette fonction prend en argument :
+        couche : liste de chaîne de caractères donnant la structure des couches
+        data_dico : dictionnaire associant chaque couche à son indice optique complexe et à sa liste d'épaisseur (éventuellement vide si l'élément n'est pas utilisé dans les couches considérées)
+        pol : 's' si la polarisation est s (E normal au plan d'incidence,  B dans le plan d'incidence) ; 'p' si la polarisation est p (E dans le plan d'incidence, B normal au plan d'incidence)
+        th_O : nombre flotant donnant l'angle d'incidence (en radians)
+        lam_vam : nombre flotant donnant la longueur d'onde dans le vide de l'onde plane considérée (en nm)
+        step : nombre entier donnant le nombre de points considérés par couche 
+        eps : nombre flotant donnant la valeur de décalage par rapport aux interfaces des couches
+        reverse : booléen valant True si on veut faire comme si l'onde plane est envoyée depuis l'autre côté
+    Elle ne renvoie rien mais trace l'absorption en fonction de la profondeur pour les couches considérées.
+    """
+
+    #Construction des listes d'indices de réfraction et d'épaisseurs rangés dans l'ordre des couches
+    d_list = []     #liste des épaisseurs des couches
+    n_list = []     #liste des indices optiques des couches
+    for c in couche:
+        data_c = data_dico.get(c)
+        n_list.append(data_c[1])
+        #n_list.append(interpolation(lam_vac, data_c[1])    #changer ligne précédente par celle-ci quand les n_couche seront des listes
+        d_list.append(data_c[0][0])
+        del data_c[0][0]
+        del data_dico[c]
+        data_dico[c]=data_c
+
+    #Construction de la liste des épaisseurs cumulées 
+    #forcément d_list[0]==d_list[-1]=='inf' pour coh_tmm
+    thickness_cum_aff = [0]   #thickness[i] = épaisseur au début de la couche i+1 (0 correspond à la fin de la première couche infinie)  
+    for i in range(1,len(d_list)-1):
+        thickness_cum_aff.append(thickness_cum_aff[-1] + d_list[i])
+    
+    #Si on considère que l'onde plane est envoyée depuis l'autre côté
+    d_list_aff = d_list.copy()
+    if reverse:
+        d_list.reverse()
+        n_list.reverse()
+        thickness_cum = [0]
+        for i in range(1,len(d_list)-1):
+            thickness_cum.append(thickness_cum[-1] + d_list[i])
+    else:
+        thickness_cum = thickness_cum_aff
+
+    #Construction de la liste des points considérés pour la profondeur
+    depth = []
+    for i in range(1, len(thickness_cum)):
+        d_i = d_list[i]/step
+        e_cum = thickness_cum[i-1]
+        if i == 0:
+            depth_i = [0]
+        else:
+            depth_i = [e_cum + eps]
+        for j in range(1, step):
+            depth_i.append(e_cum + j*d_i)
+        depth_i.append(thickness_cum[i] - eps)
+        depth = depth + depth_i
+
+    if reverse:
+        depth_aff = []
+        for i in range(1, len(thickness_cum_aff)):
+            d_i = d_list_aff[i]/step
+            e_cum = thickness_cum_aff[i-1]
+            if i == 0:
+                depth_aff_i = [0]
+            else:
+                depth_aff_i = [e_cum + eps]
+            for j in range(1, step):
+                depth_aff_i.append(e_cum + j*d_i)
+            depth_aff_i.append(thickness_cum_aff[i] - eps)
+            depth_aff = depth_aff + depth_aff_i
+    else:
+        depth_aff = depth
+
+    #Construction de la liste de l'absorption en chaque point de depth
+    absorption = []
+    coh_tmm_data = coh_tmm(pol, n_list, d_list, th_0, lam_vac)
+    for z in depth:
+        [layer, distance] = find_in_structure_with_inf(d_list, z)   #forcément d_list[0] == d_list[-1] == 'inf' pour coh_tmm
+        output = position_resolved(layer, distance, coh_tmm_data)   #retourne un dictionnaire avec pyon, absor, Ex, Ey et Ez
+        absorption.append(output.get('absor'))        
+    absorption
+    m_abs = max(absorption)
+
+    if reverse:
+        absorption.reverse()
+    
+    #Tracé de l'absorption en fonction de la profondeur
+    plot(depth_aff,absorption)
+    xlabel('Depth (en nm)')
+    ylabel('Absorption (en  nm^(-1))')
+    for x_cum in thickness_cum_aff:
+        axvline(x=x_cum, color='grey')
+    for i in range(1, len(d_list)-1):
+        x_cum = thickness_cum_aff[i-1]
+        annotate(couche[i], (x_cum + d_list_aff[i]/2, m_abs - eps), color='black', rotation='vertical')
+    show()
+
+plot_absorb_depth(couche, data_dico, pol, th_0, lam_vac, step, eps, reverse)
+
